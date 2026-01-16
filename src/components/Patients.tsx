@@ -326,7 +326,10 @@ export default function Patients({ initialNRM, onClearInitialNRM, patients: exte
   }, [poliOptions, recPoli]);
   useEffect(() => {
     const selectedPoliId = poliOptions.find((p) => p.name === recPoli)?.id;
-    const docList = selectedPoliId ? doctorOptions.filter((d) => d.poli_id === selectedPoliId) : doctorOptions;
+    let docList = selectedPoliId ? doctorOptions.filter((d) => d.poli_id === selectedPoliId) : doctorOptions;
+    if (docList.length === 0) {
+      docList = doctorOptions;
+    }
     if (docList.length > 0 && !docList.some((d) => d.name === recDoctor)) {
       setRecDoctor(docList[0].name);
     }
@@ -1075,7 +1078,8 @@ export default function Patients({ initialNRM, onClearInitialNRM, patients: exte
                       >
                         {(() => {
                           const selectedPoliId = poliOptions.find((p) => p.name === recPoli)?.id;
-                          const docList = selectedPoliId ? doctorOptions.filter((d) => d.poli_id === selectedPoliId) : doctorOptions;
+                          let docList = selectedPoliId ? doctorOptions.filter((d) => d.poli_id === selectedPoliId) : doctorOptions;
+                          if (docList.length === 0) docList = doctorOptions;
                           if (docList.length === 0) return <option>Tidak ada dokter</option>;
                           return docList.map((d) => (
                             <option key={d.id} value={d.name}>
@@ -1773,7 +1777,8 @@ export default function Patients({ initialNRM, onClearInitialNRM, patients: exte
                       >
                         {(() => {
                           const selectedPoliId = poliOptions.find((p) => p.name === recPoli)?.id;
-                          const docList = selectedPoliId ? doctorOptions.filter((d) => d.poli_id === selectedPoliId) : doctorOptions;
+                          let docList = selectedPoliId ? doctorOptions.filter((d) => d.poli_id === selectedPoliId) : doctorOptions;
+                          if (docList.length === 0) docList = doctorOptions;
                           if (docList.length === 0) return <option>Tidak ada dokter</option>;
                           return docList.map((d) => (<option key={d.id} value={d.name}>{d.name}</option>));
                         })()}

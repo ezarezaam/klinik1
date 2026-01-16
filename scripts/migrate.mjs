@@ -11,6 +11,39 @@ const sql = `
 -- Enable required extension
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+GRANT USAGE ON SCHEMA public TO anon;
+GRANT USAGE ON SCHEMA public TO authenticated;
+GRANT USAGE ON SCHEMA public TO service_role;
+
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO anon;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO authenticated;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO authenticated;
+
+GRANT INSERT, UPDATE ON TABLE patients TO anon;
+GRANT INSERT, UPDATE ON TABLE patients TO authenticated;
+GRANT INSERT, UPDATE ON TABLE registrations TO anon;
+GRANT INSERT, UPDATE ON TABLE registrations TO authenticated;
+
+DO $$
+DECLARE
+  t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY[
+    'polies','doctors','suppliers','drugs','drug_batches','inventory_movements',
+    'medical_records','medical_record_medications',
+    'expense_categories','finance_expenses','purchase_items','finance_incomes',
+    'invoices','diagnoses','procedures','administrations'
+  ]
+  LOOP
+    EXECUTE format('GRANT INSERT, UPDATE, DELETE ON %I TO anon;', t);
+    EXECUTE format('GRANT INSERT, UPDATE, DELETE ON %I TO authenticated;', t);
+  END LOOP;
+END $$;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT INSERT, UPDATE, DELETE ON TABLES TO anon;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT INSERT, UPDATE, DELETE ON TABLES TO authenticated;
+
 -- Updated-at trigger function (idempotent replace)
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$
@@ -93,10 +126,9 @@ $$;
 
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM users WHERE email = 'admin@klinik.local' AND deleted_at IS NULL) THEN
-    INSERT INTO users (username, full_name, email, role, password_hash)
-    VALUES ('admin', 'Administrator', 'admin@klinik.local', 'admin', crypt('admin123', gen_salt('bf')));
-  END IF;
+  INSERT INTO users (username, full_name, email, role, password_hash)
+  VALUES ('admin', 'Administrator', 'admin@klinik.local', 'admin', crypt('admin123', gen_salt('bf')))
+  ON CONFLICT (username) DO NOTHING;
 END $$;
 
 -- User management RPCs
@@ -428,6 +460,82 @@ CREATE TABLE IF NOT EXISTS inventory_movements (
 );
 CREATE INDEX IF NOT EXISTS inventory_movements_drug_idx ON inventory_movements(drug_id);
 CREATE INDEX IF NOT EXISTS inventory_movements_batch_idx ON inventory_movements(batch_id);
+
+-- Manual stock adjustment RPC
+CREATE OR REPLACE FUNCTION adjust_stock(
+  p_drug_id uuid,
+  p_quantity integer,
+  p_movement movement_type,
+  p_batch_code text DEFAULT NULL,
+  p_expires date DEFAULT NULL
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_batch_id uuid;
+  v_auto_code text;
+BEGIN
+  IF p_quantity IS NULL OR p_quantity <= 0 THEN
+    RETURN;
+  END IF;
+
+  IF p_movement = 'IN' THEN
+    IF p_batch_code IS NOT NULL THEN
+      SELECT id INTO v_batch_id
+      FROM drug_batches
+      WHERE drug_id = p_drug_id AND batch_code = p_batch_code AND deleted_at IS NULL
+      LIMIT 1;
+      IF v_batch_id IS NULL THEN
+        INSERT INTO drug_batches (drug_id, batch_code, qty, expires_at)
+        VALUES (p_drug_id, p_batch_code, 0, p_expires)
+        RETURNING id INTO v_batch_id;
+      ELSE
+        IF p_expires IS NOT NULL THEN
+          UPDATE drug_batches SET expires_at = p_expires WHERE id = v_batch_id;
+        END IF;
+      END IF;
+    ELSE
+      SELECT id INTO v_batch_id
+      FROM drug_batches
+      WHERE drug_id = p_drug_id AND deleted_at IS NULL
+      ORDER BY expires_at NULLS LAST
+      LIMIT 1;
+      IF v_batch_id IS NULL THEN
+        v_auto_code := 'ADJ-' || to_char(NOW(), 'YYYYMMDD') || '-' || substr(p_drug_id::text, 1, 8);
+        INSERT INTO drug_batches (drug_id, batch_code, qty, expires_at)
+        VALUES (p_drug_id, v_auto_code, 0, p_expires)
+        RETURNING id INTO v_batch_id;
+      END IF;
+    END IF;
+    UPDATE drug_batches SET qty = qty + p_quantity WHERE id = v_batch_id;
+    INSERT INTO inventory_movements (drug_id, batch_id, movement, source, quantity)
+    VALUES (p_drug_id, v_batch_id, 'IN', 'adjustment', p_quantity);
+  ELSE
+    IF p_batch_code IS NOT NULL THEN
+      SELECT id INTO v_batch_id
+      FROM drug_batches
+      WHERE drug_id = p_drug_id AND batch_code = p_batch_code AND deleted_at IS NULL
+      LIMIT 1;
+    END IF;
+    IF v_batch_id IS NULL THEN
+      SELECT id INTO v_batch_id
+      FROM drug_batches
+      WHERE drug_id = p_drug_id AND deleted_at IS NULL
+      ORDER BY expires_at NULLS LAST
+      LIMIT 1;
+    END IF;
+    IF v_batch_id IS NULL THEN
+      RAISE EXCEPTION 'No batch available for OUT';
+    END IF;
+    UPDATE drug_batches SET qty = GREATEST(0, qty - p_quantity) WHERE id = v_batch_id;
+    INSERT INTO inventory_movements (drug_id, batch_id, movement, source, quantity)
+    VALUES (p_drug_id, v_batch_id, 'OUT', 'adjustment', p_quantity);
+  END IF;
+END;
+$$;
+GRANT EXECUTE ON FUNCTION adjust_stock(uuid, integer, movement_type, text, date) TO anon;
 
 -- Patients
 CREATE TABLE IF NOT EXISTS patients (

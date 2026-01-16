@@ -26,6 +26,7 @@ type Page =
   | 'master-poli'
   | 'master-dokter'
   | 'master-obat'
+  | 'master-adjust-obat'
   | 'master-tindakan'
   | 'master-diagnosa'
   | 'master-administrasi'
@@ -46,6 +47,7 @@ export default function Sidebar({ currentPage, onPageChange, userEmail, onLogout
     { id: 'master-poli', label: 'Poli', icon: ClipboardList },
     { id: 'master-dokter', label: 'Dokter', icon: Stethoscope },
     { id: 'master-obat', label: 'Obat', icon: Pill },
+    { id: 'master-adjust-obat', label: 'Adjust Obat', icon: Activity },
     { id: 'master-tindakan', label: 'Tindakan', icon: Activity },
     { id: 'master-diagnosa', label: 'Diagnosa', icon: FileText },
     { id: 'master-administrasi', label: 'Administrasi', icon: Cog },

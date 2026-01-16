@@ -15,6 +15,7 @@ import MasterAdministrasi from './components/master/MasterAdministrasi';
 import MasterPenunjang from './components/master/MasterPenunjang';
 import MasterSupplier from './components/master/MasterSupplier';
 import MasterKamar from './components/master/MasterKamar';
+import MasterAdjustObat from './components/master/MasterAdjustObat';
 import Billing from './components/Billing';
 import Sidebar from './components/Sidebar';
 import Stock from './components/Stock';
@@ -36,6 +37,7 @@ type Page =
   | 'master-poli'
   | 'master-dokter'
   | 'master-obat'
+  | 'master-adjust-obat'
   | 'master-tindakan'
   | 'master-diagnosa'
   | 'master-administrasi'
@@ -124,6 +126,7 @@ function App() {
   // DB-backed stock (read-only display)
   const [inventoryDb, setInventoryDb] = useState<InventoryItem[]>([]);
   const uuidNumRef = useRef<Map<string, number>>(new Map());
+  const numUuidRef = useRef<Map<number, string>>(new Map());
   const nextIdRef = useRef<number>(1000);
   const [patientsDb, setPatientsDb] = useState<Patient[]>([]);
   const patientUuidNumRef = useRef<Map<string, number>>(new Map());
@@ -281,57 +284,51 @@ function App() {
     });
     setRegistrationsDb(list);
   }, []);
-  useEffect(() => {
-    let active = true;
-    const fetchDb = async () => {
-      if (!supabase) return;
-      // View aggregate
-      const { data: vstock, error: e1 } = await supabase
-        .from('v_drug_stock')
-        .select('drug_id,name,unit,supplier_name,min_stock');
-      // Batches
-      const { data: batches, error: e2 } = await supabase
-        .from('drug_batches')
-        .select('id,drug_id,qty,expires_at,batch_code,deleted_at')
-        .is('deleted_at', null);
-      if (e1 || e2 || !vstock || !batches) return;
-      const byDrug = new Map<string, Batch[]>();
-      for (const b of batches) {
-        const arr = byDrug.get(b.drug_id) || [];
-        arr.push({
-          id: b.batch_code || b.id,
-          qty: b.qty ?? 0,
-          expires: b.expires_at || undefined,
-        });
-        byDrug.set(b.drug_id, arr);
-      }
-      const items: InventoryItem[] = vstock.map((row) => {
-        let numId = uuidNumRef.current.get(row.drug_id);
-        if (!numId) {
-          numId = nextIdRef.current++;
-          uuidNumRef.current.set(row.drug_id, numId);
-        }
-        return {
-          id: numId,
-          name: row.name,
-          unit: row.unit,
-          supplier: row.supplier_name || undefined,
-          minStock: row.min_stock ?? 0,
-          batches: (byDrug.get(row.drug_id) || []).sort((a, b) => {
-            const ta = a.expires ? new Date(a.expires).getTime() : Number.POSITIVE_INFINITY;
-            const tb = b.expires ? new Date(b.expires).getTime() : Number.POSITIVE_INFINITY;
-            return ta - tb;
-          }),
-        };
+  const loadInventory = useCallback(async () => {
+    if (!supabase) return;
+    const { data: vstock } = await supabase.from('v_drug_stock').select('drug_id,name,unit,supplier_name,min_stock');
+    const { data: batches } = await supabase
+      .from('drug_batches')
+      .select('id,drug_id,qty,expires_at,batch_code,deleted_at')
+      .is('deleted_at', null);
+    if (!vstock || !batches) return;
+    const byDrug = new Map<string, Batch[]>();
+    for (const b of batches) {
+      const arr = byDrug.get(b.drug_id) || [];
+      arr.push({
+        id: b.batch_code || b.id,
+        qty: b.qty ?? 0,
+        expires: b.expires_at || undefined,
       });
-      if (!active) return;
-      setInventoryDb(items);
-    };
-    fetchDb();
-    return () => {
-      active = false;
-    };
+      byDrug.set(b.drug_id, arr);
+    }
+    const items: InventoryItem[] = vstock.map((row) => {
+      let numId = uuidNumRef.current.get(row.drug_id);
+      if (!numId) {
+        numId = nextIdRef.current++;
+        uuidNumRef.current.set(row.drug_id, numId);
+        numUuidRef.current.set(numId, row.drug_id);
+      }
+      return {
+        id: numId,
+        name: row.name,
+        unit: row.unit,
+        supplier: row.supplier_name || undefined,
+        minStock: row.min_stock ?? 0,
+        batches: (byDrug.get(row.drug_id) || []).sort((a, b) => {
+          const ta = a.expires ? new Date(a.expires).getTime() : Number.POSITIVE_INFINITY;
+          const tb = b.expires ? new Date(b.expires).getTime() : Number.POSITIVE_INFINITY;
+          return ta - tb;
+        }),
+      };
+    });
+    setInventoryDb(items);
   }, []);
+  useEffect(() => {
+    loadInventory();
+    return () => {
+    };
+  }, [loadInventory]);
   useEffect(() => {
     if (!supabase) return;
     const ch = supabase
@@ -483,6 +480,18 @@ function App() {
     return () => {
     };
   }, [loadPatients, loadRegistrations]);
+  useEffect(() => {
+    const path = routePath || '/dashboard';
+    const seg = path.split('/').filter(Boolean);
+    if (!authUser) return;
+    if (seg[0] === 'patients' || seg[0] === 'billing' || seg[0] === 'pendaftaran' || seg[0] === 'pemeriksaan' || seg[0] === 'pemasukan') {
+      loadPatients();
+      loadRegistrations();
+    }
+    if (seg[0] === 'pengeluaran' || seg[0] === 'stok-obat') {
+      loadInventory();
+    }
+  }, [routePath, authUser, loadPatients, loadRegistrations, loadInventory]);
   const addStockBatch = (itemId: number, batch: Batch) => {
     if (batch.qty <= 0) return;
     setInventory((prev) =>
@@ -763,6 +772,7 @@ function App() {
           items={inventoryDb}
           onAddBatch={addStockBatch}
           onReduceByItemId={reduceStockByItemId}
+          getDrugUuidByItemId={(id) => numUuidRef.current.get(id)}
           readOnly={inventoryDb.length > 0}
         />
       );
@@ -770,6 +780,7 @@ function App() {
     if (segments[0] === 'master-poli') return <MasterPoli />;
     if (segments[0] === 'master-dokter') return <MasterDokter />;
     if (segments[0] === 'master-obat') return <MasterObat />;
+    if (segments[0] === 'master-adjust-obat') return <MasterAdjustObat />;
     if (segments[0] === 'master-tindakan') return <MasterTindakan />;
     if (segments[0] === 'master-diagnosa') return <MasterDiagnosa />;
     if (segments[0] === 'master-administrasi') return <MasterAdministrasi />;
@@ -799,6 +810,7 @@ function App() {
               'master-poli': '/master-poli',
               'master-dokter': '/master-dokter',
               'master-obat': '/master-obat',
+              'master-adjust-obat': '/master-adjust-obat',
               'master-tindakan': '/master-tindakan',
               'master-diagnosa': '/master-diagnosa',
               'master-administrasi': '/master-administrasi',
